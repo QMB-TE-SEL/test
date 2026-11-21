@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SWITCH-INVENTORY</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{
+  "imports": {
+    "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"
+  }
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  [v-cloak]{display:none;}
+  .scan-chip{font-family:monospace;background:#0f172a;color:#f8fafc;padding:2px 8px;border-radius:4px;font-size:12px;}
+
+  /* 🐝 Random-flying Bee */
+  .bee-flyer{position:fixed;top:50%;left:50%;line-height:1;z-index:9999;pointer-events:auto;cursor:pointer;
+    transition:top 2.2s cubic-bezier(.45,.05,.55,.95), left 2.2s cubic-bezier(.45,.05,.55,.95);
+    transform:translate(-50%,-50%);}
+  .bee-emoji{display:inline-block;font-size:54px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.3));
+    animation:beeFlap .15s ease-in-out infinite alternate;}
+  .bee-emoji.squish{animation:beeSquish .45s ease;}
+  @keyframes beeFlap{from{transform:rotate(-6deg) scale(1);}to{transform:rotate(6deg) scale(1.05);}}
+  @keyframes beeSquish{
+    0%{transform:scale(1,1) rotate(0deg);}
+    20%{transform:scale(1.9,.3) rotate(-6deg);}
+    45%{transform:scale(.7,1.35) rotate(4deg);}
+    65%{transform:scale(1.15,.85) rotate(-3deg);}
+    85%{transform:scale(.95,1.05) rotate(1deg);}
+    100%{transform:scale(1,1) rotate(0deg);}
+  }
+  .bee-particle{position:fixed;z-index:10000;pointer-events:none;font-size:18px;
+    animation:beeParticleBurst .6s ease-out forwards;}
+  @keyframes beeParticleBurst{
+    0%{transform:translate(-50%,-50%) translate(0,0) scale(.4) rotate(0deg);opacity:1;}
+    100%{transform:translate(-50%,-50%) translate(var(--dx),var(--dy)) scale(1.1) rotate(var(--rot));opacity:0;}
+  }
+  .firework-star{position:fixed;z-index:10001;pointer-events:none;
+    clip-path:polygon(50% 0%,63% 34%,100% 36%,71% 58%,82% 93%,50% 72%,18% 93%,29% 58%,0% 36%,37% 34%);
+    animation:fireworkBurst .95s cubic-bezier(.2,.7,.3,1) forwards;}
+  @keyframes fireworkBurst{
+    0%{transform:translate(-50%,-50%) translate(0,0) rotate(0deg) scale(.3);opacity:1;}
+    60%{opacity:1;}
+    100%{transform:translate(-50%,-50%) translate(var(--dx),var(--dy)) rotate(var(--rot)) scale(1);opacity:0;}
+  }
+  .firework-flash{position:fixed;inset:0;z-index:9998;pointer-events:none;
+    background:radial-gradient(circle at var(--fx) var(--fy), rgba(255,255,255,.55), transparent 55%);
+    animation:fireworkFlash .35s ease-out forwards;}
+  @keyframes fireworkFlash{0%{opacity:1;}100%{opacity:0;}}
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen pb-10">
+<div id="app" v-cloak>
+
+  <div class="bee-flyer" id="beeFlyer" aria-hidden="true"><span class="bee-emoji" id="beeEmoji">🐝</span></div>
+
+  <header class="bg-slate-900 text-slate-50">
+    <div class="px-4 py-3 flex items-center justify-between">
+      <div>
+        <h1 class="text-base font-bold">SWITCH-INVENTORY</h1>
+        <p class="text-xs text-slate-400">Real-time Inventory Tracking</p>
+      </div>
+      <div class="flex items-center gap-2 text-xs text-slate-300">
+        <span :class="connected?'bg-emerald-400':'bg-rose-400'" class="w-2 h-2 rounded-full inline-block"></span>
+        {{ saving?'กำลังบันทึก...':lastSync?'Sync '+lastSync:'กำลังเชื่อมต่อ...' }}
+      </div>
+    </div>
+  </header>
+
+  <div class="bg-white border-b border-slate-200 sticky top-0 z-10">
+    <div class="flex overflow-x-auto">
+      <button v-for="t in tabs" :key="t.id" @click="tab=t.id"
+        :class="tab===t.id?'border-teal-600 text-teal-700':'border-transparent text-slate-400'"
+        class="px-5 py-3 text-xs font-medium border-b-2 whitespace-nowrap">{{ t.label }}</button>
+    </div>
+  </div>
+
+  <main class="w-full px-3 mt-3 space-y-3">
+    <div v-if="err" class="bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-lg px-3 py-2">{{ err }}</div>
+
+    <!-- ===== DASHBOARD ===== -->
+    <template v-if="tab==='dashboard'">
+
+      <!-- Summary cards — compact F7/F9/F10 side by side -->
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-white rounded-xl border border-slate-200 px-3 py-3 flex items-center justify-between">
+          <span class="inline-block text-xs font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700">F7</span>
+          <div class="text-right">
+            <div class="text-xl font-bold text-slate-800">{{ f7Stock }} / {{ f7Out }}</div>
+            <div class="text-[10px] text-slate-400">In Stock / Issued</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-slate-200 px-3 py-3 flex items-center justify-between">
+          <span class="inline-block text-xs font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700">F9</span>
+          <div class="text-right">
+            <div class="text-xl font-bold text-slate-800">{{ f9Stock }} / {{ f9Out }}</div>
+            <div class="text-[10px] text-slate-400">In Stock / Issued</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-slate-200 px-3 py-3 flex items-center justify-between">
+          <span class="inline-block text-xs font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700">F10</span>
+          <div class="text-right">
+            <div class="text-xl font-bold text-slate-800">{{ f10Stock }} / {{ f10Out }}</div>
+            <div class="text-[10px] text-slate-400">In Stock / Issued</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter bar + table -->
+      <div class="bg-white rounded-xl border border-slate-200">
+        <div class="flex flex-wrap items-center gap-2 px-3 py-2.5 border-b border-slate-100">
+          <!-- Multi-keyword search -->
+          <input v-model="dashQ"
+            class="flex-1 min-w-[180px] rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+            placeholder=" ค้นหา... ใช้ , คั่นหลายคำ เช่น SNxx, F7, Arista"/>
+          <!-- Date Filter -->
+            <span class="text-xs text-slate-500 whitespace-nowrap">วันที่</span>
+            <input type="date"
+              v-model="dashDateFrom"
+              class="rounded-lg border border-slate-300 px-2 py-1.5 text-sm"/>
+
+            <span class="text-xs text-slate-400">-</span>
+
+            <input type="date"
+              v-model="dashDateTo"
+              class="rounded-lg border border-slate-300 px-2 py-1.5 text-sm"/>
+
+            <button
+              v-if="dashDateFrom || dashDateTo"
+              @click="dashDateFrom='';dashDateTo=''"
+              class="text-xs text-rose-500 hover:text-rose-700 whitespace-nowrap">
+              ✕
+            </button>
+          <!-- Location dropdown -->
+          <select v-model="dashLoc" class="rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white">
+            <option value="">All Location</option>
+            <option v-for="l in LOCATIONS" :key="l" :value="l">{{ l }}</option>
+          </select>
+          <!-- Status dropdown -->
+          <select v-model="dashStatus" class="rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white">
+            <option value="">All Status</option>
+            <option value="In Stock">In Stock</option>
+            <option value="Issued">Issued</option>
+            <option value="Returned">Returned</option>
+            <option value="Received">Received</option>
+            <option value="Moved">Moved</option>
+          </select>
+          <span class="text-xs text-slate-400 whitespace-nowrap">{{ filteredDashRows.length }} รายการ</span>
+          <button @click="showExportModal=true" class="bg-slate-900 hover:bg-slate-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg whitespace-nowrap">Export</button>
+        </div>
+
+        <!-- Table: ซูมด้วยการ pinch สองนิ้วบนตารางได้โดยตรง (ไม่กระทบการซูมทั้งหน้า) -->
+        <div class="overflow-x-auto" style="touch-action: pan-x pan-y;"
+          @touchstart="onTableTouchStart" @touchmove="onTableTouchMove" @touchend="onTableTouchEnd" @touchcancel="onTableTouchEnd">
+          <table class="w-full text-xs border-collapse" :style="{zoom: tableZoom+'%'}">
+            <thead>
+              <tr class="bg-slate-800 text-white">
+                <th class="py-2 px-2 text-center font-semibold border border-slate-600 whitespace-nowrap">#</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">PO</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">PN</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">Switch Model</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">SN</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">สถานที่</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">สถานะ</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">หมายเหตุ</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">ผู้รับ/เบิก/คืน</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">วันที่</th>
+                <th class="py-2 px-2 text-center font-semibold border border-slate-600 whitespace-nowrap">รูป</th>
+                <th class="py-2 px-2 text-center font-semibold border border-slate-600 whitespace-nowrap">ลบ</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!filteredDashRows.length">
+                <td colspan="12" class="text-center text-slate-400 py-10 border border-slate-200">ไม่พบรายการ</td>
+              </tr>
+              <tr v-for="(row,idx) in filteredDashRows" :key="row.sn+'_'+row.txType+'_'+row.timestamp"
+                :class="idx%2===0?'bg-white':'bg-slate-50'">
+                <td class="py-1.5 px-2 border border-slate-200 text-center text-slate-400 whitespace-nowrap">{{ idx+1 }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ row.po }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 font-mono whitespace-nowrap">{{ row.pn }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ row.swName }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 font-mono whitespace-nowrap">{{ row.sn }}</td>
+                <td class="py-1.5 px-2 border border-slate-200">
+                  <span :class="locColor(row.location)" class="text-[10px] font-bold px-1.5 py-0.5 rounded">{{ row.location }}</span>
+                </td>
+                <td class="py-1.5 px-2 border border-slate-200">
+                  <span v-for="(s,si) in visibleBadges(row)" :key="si" :class="s.color" class="text-[10px] font-bold px-1.5 py-0.5 rounded mr-1 inline-block whitespace-nowrap">{{ s.label }}</span>
+                </td>
+                <td class="py-1.5 px-2 border border-slate-200">{{ row.remark }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ row.person }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ row.date }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 text-center">
+                  <button @click="openBatchPhotoModal(row)" class="text-teal-600 hover:text-teal-800 inline-flex items-center justify-center" title="ดู/เพิ่มรูปสวิตช์ (PO/PN นี้)">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                      <circle cx="12" cy="13" r="4"/>
+                    </svg>
+                  </button>
+                </td>
+                <td class="py-1.5 px-2 border border-slate-200 text-center">
+                  <button @click="confirmDeleteItem(row.sn)" class="text-rose-400 hover:text-rose-600 font-bold text-sm">✕</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="pt-1">
+        <button v-if="!resetArmed" @click="resetArmed=true" class="text-xs text-slate-400 hover:text-rose-600">ล้างข้อมูลทั้งหมด</button>
+        <div v-else class="flex items-center gap-2 text-xs">
+          <span class="text-rose-600">ยืนยันลบข้อมูลทั้งหมด?</span>
+          <button @click="resetAll" class="px-2 py-1 bg-rose-600 text-white rounded">ยืนยัน</button>
+          <button @click="resetArmed=false" class="px-2 py-1 bg-slate-200 rounded">ยกเลิก</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- ===== รับ ===== -->
+    <template v-if="tab==='receive'">
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">สร้างรายการรับเข้าใหม่</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">PO Number</label>
+            <input v-model="rcv.po" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="xxxxx"/></div>
+          <div class="min-w-0"><label class="block text-xs font-medium text-slate-500 mb-1">วันที่รับ</label>
+            <input type="date" v-model="rcv.date" class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">Switch Model</label>
+            <input v-model="rcv.swName" list="sw-list" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="เช่น Arista"/>
+            <datalist id="sw-list"><option v-for="s in swOptions" :value="s"/></datalist></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">Part Number</label>
+            <input v-model="rcv.pn" list="pn-list-r" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" placeholder="Input Part Number"/>
+            <datalist id="pn-list-r"><option v-for="p in pnOptions" :value="p"/></datalist></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">จำนวน</label>
+            <input type="number" v-model="rcv.qty" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="0"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">เก็บที่</label>
+            <div class="flex gap-2">
+              <button v-for="loc in LOCATIONS" :key="loc" @click="rcv.location=loc"
+                :class="rcv.location===loc?LOC_BTN_ACTIVE[loc]:'border-slate-300 text-slate-500'"
+                class="flex-1 py-2 rounded-lg text-sm font-semibold border">{{ loc }}</button>
+            </div></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">รหัสผู้รับ</label>
+            <input v-model="rcv.empCode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="T6XXXXXX"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">ชื่อผู้รับ</label>
+            <input v-model="rcv.empName" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="ชื่อ-นามสกุล"/></div>
+        </div>
+        <p v-if="rcvErr" class="text-xs text-rose-600 mt-2">{{ rcvErr }}</p>
+        <button @click="createBatch" class="mt-3 w-full bg-teal-700 hover:bg-teal-800 text-white text-sm font-medium rounded-lg py-2.5">+ สร้างรายการ และเริ่มยิง SN</button>
+      </div>
+
+      <!-- Scan SN — แยกเป็น 2 ขั้น: พิมพ์ SN แล้วกด Add -->
+      <div v-if="activeBatch" class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <div class="flex items-center justify-between mb-1 gap-2">
+          <h2 class="text-sm font-semibold text-slate-700">ยิง SN — PO {{ activeBatch.po }} · {{ activeBatch.swName }}</h2>
+          <button @click="openBatchPhotoModal(activeBatch)" class="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium text-teal-700 border border-teal-200 bg-teal-50 hover:bg-teal-100 rounded-lg px-2.5 py-1.5 whitespace-nowrap">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            รูปสวิตช์ (PO/PN นี้)
+          </button>
+        </div>
+        <div class="flex items-center justify-between text-xs text-slate-500 mb-3 gap-2">
+          <span class="min-w-0">เพิ่มแล้ว <b class="text-slate-800">{{ activeBatch.snList.length }}</b>/{{ activeBatch.qty }}
+            <span :class="locColor(activeBatch.location)" class="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded">{{ activeBatch.location }}</span>
+          </span>
+          <input type="date" v-model="scanDate" class="shrink-0 max-w-[140px] border border-slate-300 rounded px-2 py-1 text-xs"/>
+        </div>
+
+        <!-- Step 1: scan into preview -->
+        <div v-if="!snPreview" class="flex gap-2">
+          <input ref="scanInput" v-model="scanValue" @keydown.enter="previewSn"
+            class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" placeholder="ยิงหรือพิมพ์ SN แล้วกด Enter เพื่อตรวจสอบ"/>
+          <button @click="openScanner('receive')" title="สแกนด้วยกล้อง / อัพโหลดรูป" class="bg-teal-700 text-white rounded-lg px-3 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+          </button>
+          <button @click="previewSn" class="bg-slate-700 text-white rounded-lg px-4 text-sm">Enter</button>
+        </div>
+
+        <!-- Step 2: confirm preview -->
+        <div v-else class="space-y-2">
+          <div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+            <span class="scan-chip" style="background:#92400e;color:#fffbeb;font-size:13px;padding:4px 10px;">{{ snPreview }}</span>
+            <span class="text-xs text-amber-700 flex-1">ตรวจสอบ SN ก่อนยืนยัน</span>
+          </div>
+          <div class="flex gap-2">
+            <button @click="confirmSn" class="flex-1 bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold rounded-lg py-2">✓ ยืนยัน Add SN</button>
+            <button @click="cancelSn" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm rounded-lg py-2">✕ ยกเลิก / แก้ไข</button>
+          </div>
+        </div>
+
+        <p v-if="scanErr" class="text-xs text-rose-600 mt-2">{{ scanErr }}</p>
+
+        <!-- SN list -->
+        <div v-if="activeBatch.snList.length" class="flex flex-wrap gap-1.5 mt-3">
+          <span v-for="sn in activeBatch.snList" :key="sn" class="inline-flex items-center gap-1">
+            <span class="scan-chip">{{ sn }}</span>
+            <button @click="removeSn(sn)" class="text-slate-400 hover:text-rose-600 text-xs font-bold">✕</button>
+          </span>
+        </div>
+      </div>
+
+      <!-- Pending batches -->
+      <div v-if="pendingBatches.length" class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">ยิง SN ไม่ครบ</h2>
+        <ul class="space-y-2">
+          <li v-for="b in pendingBatches" :key="b.id" class="flex items-center justify-between text-xs border border-slate-200 rounded-lg px-3 py-2">
+            <div>
+              <p class="font-medium">PO {{ b.po }} · {{ b.swName }}
+                <span :class="locColor(b.location)" class="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded">{{ b.location }}</span>
+              </p>
+              <p class="text-slate-400">{{ fmtDate(b.receivedDate) }} · {{ b.snList.length }}/{{ b.qty }} ตัว</p>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button @click="openBatchPhotoModal(b)" class="text-teal-600 hover:text-teal-800 p-1.5" title="รูปสวิตช์">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                  <circle cx="12" cy="13" r="4"/>
+                </svg>
+              </button>
+              <button @click="activeBatchId=b.id; scanDate=b.receivedDate; snPreview=''" class="bg-teal-50 text-teal-700 px-2.5 py-1 rounded-md font-medium">ยิงต่อ</button>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <!-- History -->
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">ประวัติรับเข้าล่าสุด</h2>
+        <p v-if="!activeBatches.length" class="text-xs text-slate-400 text-center py-4">ยังไม่มีรายการ</p>
+        <ul class="space-y-2">
+          <li v-for="b in activeBatches.slice(0,8)" :key="b.id" class="text-xs border-b border-slate-100 pb-2">
+            <div class="flex justify-between items-center">
+              <span class="font-medium">PO {{ b.po }} · {{ b.swName }}
+                <span :class="locColor(b.location)" class="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded">{{ b.location }}</span>
+              </span>
+              <span class="flex items-center gap-2">
+                <button @click="openBatchPhotoModal(b)" class="text-teal-600 hover:text-teal-800" title="รูปสวิตช์">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                    <circle cx="12" cy="13" r="4"/>
+                  </svg>
+                </button>
+                <span class="text-slate-400">{{ fmtDate(b.receivedDate) }}</span>
+              </span>
+            </div>
+            <p class="text-slate-400 font-mono">{{ b.pn }} · {{ b.snList.length }}/{{ b.qty }} ตัว<span v-if="b.receivedBy"> · ผู้รับ: {{ b.receivedBy.name }}</span></p>
+          </li>
+        </ul>
+      </div>
+    </template>
+
+    <!-- ===== เบิก ===== -->
+    <template v-if="tab==='withdraw'">
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">ข้อมูลการเบิก</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">เบิกจากสถานที่</label>
+            <select v-model="wd.location" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+              <option value="">— เลือกสถานที่ —</option>
+              <option v-for="l in LOCATIONS" :key="l" :value="l">{{ l }}</option>
+            </select></div>
+          <div class="min-w-0"><label class="block text-xs font-medium text-slate-500 mb-1">วันที่เบิก</label>
+            <input type="date" v-model="wd.date" class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">รหัสพนักงาน</label>
+            <input v-model="wd.empCode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="T6XXXXXX"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">ชื่อผู้เบิก</label>
+            <input v-model="wd.empName" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="ชื่อ-นามสกุล"/></div>
+          <div class="col-span-2"><label class="block text-xs font-medium text-slate-500 mb-1">เหตุผลที่เบิก <span class="text-rose-500">*</span></label>
+            <input v-model="wd.reason" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="เช่น Setup Fixture Line I20"/></div>
+          <div class="col-span-2"><label class="block text-xs font-medium text-slate-500 mb-1">ค้นหาตาม Part Number</label>
+            <input v-model="wd.pn" list="pn-list-w" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" placeholder="Input Part Number"/>
+            <datalist id="pn-list-w"><option v-for="p in pnOptions" :value="p"/></datalist></div>
+        </div>
+        <p v-if="wd.location" class="text-xs text-slate-400 mt-2">คงเหลือที่ {{ wd.location }}{{ wd.pn?' · PN '+wd.pn:'' }}: {{ availableItems.length }} ตัว</p>
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">เลือก SN จะเบิก</h2>
+        <div class="flex gap-2">
+          <input v-model="wdScan" @keydown.enter="addWdSn"
+            class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" placeholder="ยิง SN แล้วกด Enter"/>
+          <button @click="openScanner('withdraw')" title="สแกนด้วยกล้อง / อัพโหลดรูป" class="bg-amber-600 text-white rounded-lg px-3 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+          </button>
+          <button @click="addWdSn" class="bg-slate-900 text-white rounded-lg px-4 text-sm">Enter</button>
+        </div>
+        <p v-if="wdErr" class="text-xs text-rose-600 mt-2">{{ wdErr }}</p>
+        <p class="text-xs font-medium text-slate-500 mt-3 mb-1.5">หรือเลือกจากสต็อก</p>
+        <p v-if="!wd.location" class="text-xs text-slate-400">เลือกสถานที่ก่อน</p>
+        <p v-else-if="!availableItems.length" class="text-xs text-slate-400">ไม่มีของคงเหลือ</p>
+        <div v-else class="max-h-44 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+          <button v-for="item in availableItems" :key="item.sn" @click="addWdItem(item)"
+            :disabled="wdPending.some(function(p){return p.sn===item.sn;})"
+            class="w-full flex items-center justify-between px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed">
+            <span class="font-mono text-xs">{{ item.sn }}</span>
+            <span class="text-xs text-slate-400 truncate px-2 flex-1">{{ item.swName }} · {{ item.pn }}</span>
+            <span class="text-teal-600 text-lg leading-none">+</span>
+          </button>
+        </div>
+        <div v-if="wdPending.length" class="space-y-1.5 mt-3">
+          <div v-for="item in wdPending" :key="item.sn" class="flex items-center justify-between bg-slate-50 rounded-lg px-2.5 py-1.5">
+            <span class="scan-chip" style="background:#92400e;color:#fffbeb">{{ item.sn }}</span>
+            <span class="text-xs text-slate-400 flex-1 px-2 truncate">{{ item.swName }}</span>
+            <button @click="wdPending=wdPending.filter(function(i){return i.sn!==item.sn;})" class="text-slate-400 hover:text-rose-600 font-bold">✕</button>
+          </div>
+        </div>
+        <button @click="confirmWithdraw" class="mt-3 w-full bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg py-2.5">ยืนยันการเบิก ({{ wdPending.length }} ตัว)</button>
+      </div>
+    </template>
+
+    <!-- ===== คืน ===== -->
+    <template v-if="tab==='return'">
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">ข้อมูลการคืน</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">รหัสผู้คืน</label>
+            <input v-model="rt.empCode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="T6XXXXXX"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">ชื่อผู้คืน</label>
+            <input v-model="rt.empName" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="ชื่อ-นามสกุล"/></div>
+          <div class="min-w-0"><label class="block text-xs font-medium text-slate-500 mb-1">วันที่คืน</label>
+            <input type="date" v-model="rt.date" class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm"/></div>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">สแกน SN ที่จะคืน</h2>
+        <div class="flex gap-2">
+          <input v-model="rtScan" @keydown.enter="addRtSn"
+            class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" placeholder="ยิง SN แล้วกด Enter"/>
+          <button @click="openScanner('return')" title="สแกนด้วยกล้อง / อัพโหลดรูป" class="bg-indigo-600 text-white rounded-lg px-3 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+          </button>
+          <button @click="addRtSn" class="bg-slate-900 text-white rounded-lg px-4 text-sm">Enter</button>
+        </div>
+        <p v-if="rtErr" class="text-xs text-rose-600 mt-2">{{ rtErr }}</p>
+        <div v-if="rtPending.length" class="space-y-1.5 mt-3">
+          <div v-for="item in rtPending" :key="item.sn" class="flex items-center justify-between bg-slate-50 rounded-lg px-2.5 py-1.5">
+            <span class="scan-chip" style="background:#881337;color:#fff1f2">{{ item.sn }}</span>
+            <span class="text-xs text-slate-400 flex-1 px-2 truncate">{{ item.swName }} · {{ item.location }}</span>
+            <button @click="rtPending=rtPending.filter(function(i){return i.sn!==item.sn;})" class="text-slate-400 hover:text-rose-600 font-bold">✕</button>
+          </div>
+        </div>
+        <button @click="confirmReturn" class="mt-3 w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg py-2.5">ยืนยันการคืน ({{ rtPending.length }} ตัว)</button>
+      </div>
+    </template>
+
+    <!-- ===== ย้ายสถานที่ ===== -->
+    <template v-if="tab==='move'">
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">ข้อมูลการย้ายสถานที่</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">ย้ายจาก</label>
+            <select v-model="mv.from" @change="mvPending=[];mvErr=''" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+              <option value="">— เลือกสถานที่ —</option>
+              <option v-for="l in LOCATIONS" :key="l" :value="l">{{ l }}</option>
+            </select></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">ย้ายไป</label>
+            <select v-model="mv.to" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+              <option value="">— เลือกสถานที่ —</option>
+              <option v-for="l in LOCATIONS" :key="l" :value="l" :disabled="l===mv.from">{{ l }}</option>
+            </select></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">รหัสผู้ย้าย</label>
+            <input v-model="mv.empCode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="T6XXXXXX"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">ชื่อผู้ย้าย</label>
+            <input v-model="mv.empName" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="ชื่อ-นามสกุล"/></div>
+          <div class="min-w-0"><label class="block text-xs font-medium text-slate-500 mb-1">วันที่ย้าย</label>
+            <input type="date" v-model="mv.date" class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm"/></div>
+          <div><label class="block text-xs font-medium text-slate-500 mb-1">หมายเหตุ (ถ้ามี)</label>
+            <input v-model="mv.reason" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="เช่น ย้ายไปใกล้ไลน์ผลิต"/></div>
+        </div>
+        <p v-if="mv.from" class="text-xs text-slate-400 mt-2">คงเหลือที่ {{ mv.from }}: {{ mvAvailable.length }} ตัว</p>
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 p-4 w-full">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">เลือก SN ที่จะย้าย</h2>
+        <div class="flex gap-2">
+          <input v-model="mvScan" @keydown.enter="addMvSn"
+            class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" placeholder="ยิง SN แล้วกด Enter"/>
+          <button @click="openScanner('move')" title="สแกนด้วยกล้อง / อัพโหลดรูป" class="bg-teal-700 text-white rounded-lg px-3 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+          </button>
+          <button @click="addMvSn" class="bg-slate-900 text-white rounded-lg px-4 text-sm">Enter</button>
+        </div>
+        <p v-if="mvErr" class="text-xs text-rose-600 mt-2">{{ mvErr }}</p>
+        <p class="text-xs font-medium text-slate-500 mt-3 mb-1.5">หรือเลือกจากสต็อก</p>
+        <p v-if="!mv.from" class="text-xs text-slate-400">เลือกสถานที่ต้นทางก่อน</p>
+        <p v-else-if="!mvAvailable.length" class="text-xs text-slate-400">ไม่มีของคงเหลือ</p>
+        <div v-else class="max-h-44 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+          <button v-for="item in mvAvailable" :key="item.sn" @click="addMvItem(item)"
+            :disabled="mvPending.some(function(p){return p.sn===item.sn;})"
+            class="w-full flex items-center justify-between px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed">
+            <span class="font-mono text-xs">{{ item.sn }}</span>
+            <span class="text-xs text-slate-400 truncate px-2 flex-1">{{ item.swName }} · {{ item.pn }}</span>
+            <span class="text-teal-600 text-lg leading-none">+</span>
+          </button>
+        </div>
+        <div v-if="mvPending.length" class="space-y-1.5 mt-3">
+          <div v-for="item in mvPending" :key="item.sn" class="flex items-center justify-between bg-slate-50 rounded-lg px-2.5 py-1.5">
+            <span class="scan-chip" style="background:#0f766e;color:#f0fdfa">{{ item.sn }}</span>
+            <span class="text-xs text-slate-400 flex-1 px-2 truncate">{{ item.swName }} · {{ item.location }}</span>
+            <button @click="mvPending=mvPending.filter(function(i){return i.sn!==item.sn;})" class="text-slate-400 hover:text-rose-600 font-bold">✕</button>
+          </div>
+        </div>
+        <button @click="confirmMove" class="mt-3 w-full bg-teal-700 hover:bg-teal-800 text-white text-sm font-medium rounded-lg py-2.5">ยืนยันการย้าย ({{ mvPending.length }} ตัว){{ mv.from && mv.to ? ' · '+mv.from+' → '+mv.to : '' }}</button>
+      </div>
+
+      <!-- ประวัติการย้าย -->
+      <div class="bg-white rounded-xl border border-slate-200 w-full">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+          <h2 class="text-sm font-semibold text-slate-700">ประวัติการย้ายสถานที่</h2>
+          <span class="text-xs text-slate-400">{{ mvHistory.length }} รายการ</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs border-collapse">
+            <thead>
+              <tr class="bg-slate-800 text-white">
+                <th class="py-2 px-2 text-center font-semibold border border-slate-600 whitespace-nowrap">#</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">วันที่</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">SN</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">Switch Model</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">PN</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">ย้ายจาก → ไป</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">ผู้ย้าย</th>
+                <th class="py-2 px-2 text-left font-semibold border border-slate-600 whitespace-nowrap">หมายเหตุ</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!mvHistory.length">
+                <td colspan="8" class="text-center text-slate-400 py-8 border border-slate-200">ยังไม่มีประวัติการย้าย</td>
+              </tr>
+              <tr v-for="(m,idx) in mvHistoryShown" :key="m.id||(m.sn+'_'+m.timestamp)" :class="idx%2===0?'bg-white':'bg-slate-50'">
+                <td class="py-1.5 px-2 border border-slate-200 text-center text-slate-400 whitespace-nowrap">{{ idx+1 }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ fmtDate(m.date) }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 font-mono whitespace-nowrap">{{ m.sn }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ m.swName }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 font-mono whitespace-nowrap">{{ m.pn }}</td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">
+                  <span :class="locColor(m.fromLocation)" class="text-[10px] font-bold px-1.5 py-0.5 rounded">{{ m.fromLocation||'-' }}</span>
+                  <span class="text-slate-400 mx-0.5">→</span>
+                  <span :class="locColor(m.toLocation||m.location)" class="text-[10px] font-bold px-1.5 py-0.5 rounded">{{ m.toLocation||m.location }}</span>
+                </td>
+                <td class="py-1.5 px-2 border border-slate-200 whitespace-nowrap">{{ m.personName }}<span v-if="m.personCode" class="text-slate-400"> ({{ m.personCode }})</span></td>
+                <td class="py-1.5 px-2 border border-slate-200">{{ m.reason||'-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="mvHistory.length>20" class="px-4 py-2 border-t border-slate-100 text-center">
+          <button @click="mvShowAll=!mvShowAll" class="text-xs text-teal-700 hover:text-teal-900 font-medium">{{ mvShowAll?'แสดงเฉพาะ 20 รายการล่าสุด':'แสดงทั้งหมด ('+mvHistory.length+')' }}</button>
+        </div>
+      </div>
+    </template>
+  </main>
+
+  <!-- Export Modal -->
+  <div v-if="showExportModal" class="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center px-4">
+    <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-xs">
+      <h3 class="text-sm font-semibold text-slate-800 mb-2">Export Excel</h3>
+      <p class="text-xs text-slate-500 mb-4">จะ export เฉพาะ <b class="text-slate-800">{{ filteredDashRows.length }} รายการ</b> ที่กรองอยู่ตอนนี้<br/>ไฟล์มี 4 sheet: All / F7 / F9 / F10</p>
+      <div class="flex gap-2">
+        <button @click="doExport" class="flex-1 bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium rounded-lg py-2.5">Download</button>
+        <button @click="showExportModal=false" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg py-2.5">ยกเลิก</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Delete Modal -->
+  <div v-if="deleteTarget" class="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center px-4">
+    <div class="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+      <h3 class="text-sm font-semibold text-slate-800 mb-2">ยืนยันการลบ</h3>
+      <p class="text-xs text-slate-600 mb-1">{{ deleteTarget.label }}</p>
+      <p class="text-xs text-rose-600 mb-4">{{ deleteTarget.warning }}</p>
+      <div class="flex gap-2">
+        <button @click="executeDelete" class="flex-1 bg-rose-600 hover:bg-rose-700 text-white text-sm font-medium rounded-lg py-2.5">ลบ</button>
+        <button @click="deleteTarget=null" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg py-2.5">ยกเลิก</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scanner Modal: camera barcode scan / upload photo -->
+  <div v-if="showScanner" class="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center px-4">
+    <div class="bg-white rounded-xl shadow-xl p-4 w-full max-w-sm">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-slate-800">สแกน SN ด้วยกล้อง</h3>
+        <button @click="closeScanner" class="text-slate-400 hover:text-rose-600 text-lg font-bold leading-none">✕</button>
+      </div>
+      <div id="scanner-reader" class="w-full rounded-lg overflow-hidden bg-slate-900" style="min-height:220px;"></div>
+      <p class="text-[11px] text-slate-400 mt-2">เล็งกล้องไปที่บาร์โค้ด/QR บน SN ระบบจะกรอกให้อัตโนมัติ</p>
+      <p v-if="scannerErr" class="text-xs text-rose-600 mt-2">{{ scannerErr }}</p>
+      <div class="mt-3 border-t border-slate-100 pt-3">
+        <label class="block text-xs font-medium text-slate-500 mb-1">หรืออัพโหลดรูปถ่าย SN</label>
+        <input type="file" accept="image/*" capture="environment" @change="onScanFile"
+          class="w-full text-xs file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-slate-800 file:text-white file:text-xs"/>
+      </div>
+    </div>
+  </div>
+  <!-- Batch Photo Modal: view/add/remove representative switch photos for a PO/PN receiving batch -->
+  <div v-if="showBatchPhotoModal" class="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center px-4">
+    <div class="bg-white rounded-xl shadow-xl p-4 w-full max-w-sm max-h-[85vh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-slate-800">รูปสวิตช์ · PO {{ batchPhotoTarget && batchPhotoTarget.po }} · <span class="font-mono">{{ batchPhotoTarget && batchPhotoTarget.pn }}</span></h3>
+        <button @click="closeBatchPhotoModal" class="text-slate-400 hover:text-rose-600 text-lg font-bold leading-none">✕</button>
+      </div>
+
+      <div v-if="batchPhotoTargetPhotos.length" class="grid grid-cols-2 gap-2 mb-3">
+        <div v-for="(p,pi) in batchPhotoTargetPhotos" :key="pi" class="relative">
+          <a :href="p.url" target="_blank" rel="noopener">
+            <img :src="p.url" class="w-full h-28 object-cover rounded-lg border border-slate-200"/>
+          </a>
+          <button @click="removeBatchPhoto(p)" class="absolute -top-1.5 -right-1.5 bg-rose-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold shadow">✕</button>
+        </div>
+      </div>
+      <p v-else class="text-xs text-slate-400 mb-3">ยังไม่มีรูป — แนะนำถ่าย 1-2 รูปให้เห็นหน้าตาสวิตช์รุ่นนี้</p>
+
+      <div v-if="batchPhotoTargetPhotos.length < 2">
+        <label class="block text-xs font-medium text-slate-500 mb-1">เพิ่มรูป (สูงสุด 2 รูปต่อ PO/PN)</label>
+        <input type="file" accept="image/*" multiple @change="onBatchPhotoFileChange"
+          class="w-full text-xs file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-slate-800 file:text-white file:text-xs"/>
+      </div>
+      <p v-else class="text-xs text-slate-500">ครบ 2 รูปแล้ว — ลบรูปเดิมก่อนถ้าต้องการเปลี่ยน</p>
+      <p v-if="batchPhotoUploading" class="text-xs text-teal-600 mt-2">กำลังอัพโหลด...</p>
+      <p v-if="batchPhotoErr" class="text-xs text-rose-600 mt-2">{{ batchPhotoErr }}</p>
+    </div>
+  </div>
+
+</div>
+<script type="module">
+import { createApp, ref, computed, nextTick } from 'vue';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyD9uwqMKgAkTAhIgyOsZqmzOkaum0Rbnc8",
+  authDomain: "switch-inventory.firebaseapp.com",
+  projectId: "switch-inventory",
+  storageBucket: "switch-inventory.firebasestorage.app",
+  messagingSenderId: "737876906621",
+  appId: "1:737876906621:web:bd873f69fc45fa292cd714"
+};
+
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+const DOCREF = doc(db, 'inventory', 'main');
+const SW_BRANDS = ['Arista','Cisco','Juniper','LYB','LB9','IX7','IX1','LY2B','LY2W','LY4'];
+
+// สถานที่เก็บ — เพิ่มสถานที่ใหม่ได้ที่นี่ที่เดียว (ต้องเพิ่มสีใน 2 ตารางด้านล่างด้วย)
+const LOCATIONS = ['F7','F9','F10'];
+const LOC_COLOR = {
+  F7:  'bg-amber-50 text-amber-700',
+  F9:  'bg-emerald-50 text-emerald-700',
+  F10: 'bg-indigo-50 text-indigo-700'
+};
+const LOC_BTN_ACTIVE = {
+  F7:  'bg-amber-600 text-white border-amber-600',
+  F9:  'bg-emerald-600 text-white border-emerald-600',
+  F10: 'bg-indigo-600 text-white border-indigo-600'
+};
+function locColor(l){return LOC_COLOR[l]||'bg-slate-100 text-slate-600';}
+
+function uid(p){return (p||'')+Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+function fmtDate(d){
+  if(!d){return '-';}
+  try{return new Date(d+'T00:00:00').toLocaleDateString('th-TH',{day:'2-digit',month:'short',year:'numeric'});}
+  catch(e){return d;}
+}
+
+var HDR_STYLE={font:{bold:true,color:{rgb:'FFFFFF'},sz:11},fill:{fgColor:{rgb:'1E293B'}},border:{top:{style:'medium',color:{rgb:'475569'}},bottom:{style:'medium',color:{rgb:'475569'}},left:{style:'thin',color:{rgb:'475569'}},right:{style:'thin',color:{rgb:'475569'}}},alignment:{horizontal:'center',vertical:'center',wrapText:true}};
+var EVEN_STYLE={fill:{fgColor:{rgb:'F8FAFC'}},border:{top:{style:'thin',color:{rgb:'CBD5E1'}},bottom:{style:'thin',color:{rgb:'CBD5E1'}},left:{style:'thin',color:{rgb:'CBD5E1'}},right:{style:'thin',color:{rgb:'CBD5E1'}}}};
+var ODD_STYLE={fill:{fgColor:{rgb:'FFFFFF'}},border:{top:{style:'thin',color:{rgb:'CBD5E1'}},bottom:{style:'thin',color:{rgb:'CBD5E1'}},left:{style:'thin',color:{rgb:'CBD5E1'}},right:{style:'thin',color:{rgb:'CBD5E1'}}}};
+var EXPORT_COLS=['PO','PN','Switch Model','SN','สถานที่','สถานะ','วันที่','ผู้รับ/เบิก/คืน','หมายเหตุ'];
+
+function buildStyledSheet(rows){
+  var ws=XLSX.utils.aoa_to_sheet([EXPORT_COLS]);
+  rows.forEach(function(row,ri){
+    EXPORT_COLS.forEach(function(col,ci){
+      var cellRef=XLSX.utils.encode_cell({r:ri+1,c:ci});
+      ws[cellRef]={v:row[col]||'',t:'s',s:ri%2===0?EVEN_STYLE:ODD_STYLE};
+    });
+  });
+  var range={s:{r:0,c:0},e:{r:rows.length,c:EXPORT_COLS.length-1}};
+  ws['!ref']=XLSX.utils.encode_range(range);
+  ws['!cols']=EXPORT_COLS.map(function(c){return {wch:Math.max(c.length+4,20)};});
+  EXPORT_COLS.forEach(function(col,ci){
+    var cellRef=XLSX.utils.encode_cell({r:0,c:ci});
+    ws[cellRef]={v:col,t:'s',s:HDR_STYLE};
+  });
+  return ws;
+}
+
+function buildTxRows(transactions, stockItems){
+  // สร้าง map สถานะปัจจุบันของแต่ละ SN
+  var stockMap={};
+  stockItems.forEach(function(item){
+    stockMap[item.sn]={
+      status:item.status,
+      pn:item.pn||'',
+      swName:item.swName||'',
+      po:item.po||'',
+      location:item.location||''
+    };
+  });
+  var TX_LABEL={receive:'Received',withdraw:'Issued',return:'Returned',move:'Moved'};
+  var TX_COLOR={receive:'bg-sky-100 text-sky-800',withdraw:'bg-amber-100 text-amber-800',return:'bg-indigo-100 text-indigo-800',move:'bg-teal-100 text-teal-800'};
+  var rows=transactions.map(function(tx){
+    var stock=stockMap[tx.sn]||{};
+    var isInStock=stock.status==='in_stock';
+    var badges=[{label:TX_LABEL[tx.type]||tx.type,color:TX_COLOR[tx.type]||'bg-slate-100 text-slate-700'}];
+    if(isInStock){ badges.push({label:'In Stock',color:'bg-emerald-100 text-emerald-800'}); }
+    return {
+      sn:tx.sn||'',
+      po:tx.po||stock.po||'',
+      pn:tx.pn||stock.pn||'',
+      swName:tx.swName||stock.swName||'',
+      location:tx.location||stock.location||'',
+      txType:tx.type,
+      statusLabel:TX_LABEL[tx.type]||tx.type,
+      statusBadges:badges,
+      isInStock:isInStock,
+      rawDate:tx.date||'',
+      date:tx.date?fmtDate(tx.date):'-',
+      person:(tx.personName?tx.personName+(tx.personCode?' ('+tx.personCode+')':''):'-'),
+      remark:tx.reason||'-',
+      timestamp:tx.timestamp||0
+    };
+  });
+  // เรียงล่าสุดก่อน
+  rows.sort(function(a,b){return b.timestamp-a.timestamp;});
+  return rows;
+}
+
+createApp({
+  setup(){
+    var data=ref({batches:[],stockItems:[],transactions:[]});
+    var saving=ref(false);var connected=ref(false);var lastSync=ref('');var err=ref('');
+    var tab=ref('dashboard');var showExportModal=ref(false);var deleteTarget=ref(null);
+
+    var tabs=[
+      {id:'dashboard',label:'Search'},
+      {id:'receive',label:'Received'},
+      {id:'withdraw',label:'Issued'},
+      {id:'return',label:'Returned'},
+      {id:'move',label:'Moved'},
+    ];
+
+    onSnapshot(DOCREF,function(snap){
+      if(snap.exists()){data.value=snap.data();}
+      else{data.value={batches:[],stockItems:[],transactions:[]};}
+      connected.value=true;lastSync.value=new Date().toLocaleTimeString('th-TH');
+    },function(){err.value='เชื่อมต่อ Firebase ไม่ได้';});
+
+    async function save(next){
+      saving.value=true;err.value='';
+      try{await setDoc(DOCREF,next);lastSync.value=new Date().toLocaleTimeString('th-TH');}
+      catch(e){err.value='บันทึกไม่สำเร็จ';}
+      saving.value=false;
+    }
+
+    var pnOptions=computed(function(){return [...new Set(data.value.stockItems.map(function(i){return i.pn;}))].sort();});
+    var swOptions=computed(function(){return [...new Set([...SW_BRANDS,...data.value.stockItems.map(function(i){return i.swName;})])].sort();});
+    var f7Stock=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='in_stock'&&i.location==='F7';}).length;});
+    var f7Out=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='withdrawn'&&i.location==='F7';}).length;});
+    var f9Stock=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='in_stock'&&i.location==='F9';}).length;});
+    var f9Out=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='withdrawn'&&i.location==='F9';}).length;});
+    var f10Stock=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='in_stock'&&i.location==='F10';}).length;});
+    var f10Out=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='withdrawn'&&i.location==='F10';}).length;});
+
+    var dashRows=computed(function(){return buildTxRows(data.value.transactions, data.value.stockItems);});
+
+    var activeBatches=computed(function(){
+      var snSet=new Set(data.value.stockItems.map(function(i){return i.sn;}));
+      return data.value.batches.filter(function(b){
+        return b.snList.some(function(sn){return snSet.has(sn);});
+      });
+    });
+
+    function txLabel(type){return {receive:'รับเข้า',withdraw:'เบิก',return:'คืน',move:'ย้าย'}[type]||type;}
+    function txColor(type){return {receive:'bg-emerald-50 text-emerald-700',withdraw:'bg-amber-50 text-amber-700',return:'bg-indigo-50 text-indigo-700',move:'bg-teal-50 text-teal-700'}[type]||'';}
+
+    // Export
+    function doExport(){
+      var srcRows=filteredDashRows.value;
+      var allRows=srcRows.map(function(r){
+        var o={};
+        o['PO']=r.po;o['PN']=r.pn;o['Switch Model']=r.swName;o['SN']=r.sn;
+        o['สถานที่']=r.location;o['สถานะ']=r.statusLabel;o['วันที่']=r.date;
+        o['ผู้รับ/เบิก/คืน']=r.person;o['หมายเหตุ']=r.remark;
+        return o;
+      });
+      var f7Rows=allRows.filter(function(_,i){return srcRows[i].location==='F7';});
+      var f9Rows=allRows.filter(function(_,i){return srcRows[i].location==='F9';});
+      var f10Rows=allRows.filter(function(_,i){return srcRows[i].location==='F10';});
+      var wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,buildStyledSheet(allRows),'All');
+      XLSX.utils.book_append_sheet(wb,buildStyledSheet(f7Rows),'F7');
+      XLSX.utils.book_append_sheet(wb,buildStyledSheet(f9Rows),'F9');
+      XLSX.utils.book_append_sheet(wb,buildStyledSheet(f10Rows),'F10');
+      XLSX.writeFile(wb,'switch-inventory-'+todayStr()+'.xlsx');
+      showExportModal.value=false;
+    }
+
+    // Delete
+    function confirmDeleteItem(sn){
+      deleteTarget.value={type:'item',sn:sn,label:'ลบ SN: '+sn+' ออกจากระบบ',warning:'ประวัติที่เกี่ยวข้องจะถูกลบด้วย ไม่สามารถกู้คืนได้'};
+    }
+    function executeDelete(){
+      if(!deleteTarget.value){return;}
+      var sn=deleteTarget.value.sn;
+      var next=Object.assign({},data.value,{
+        stockItems:data.value.stockItems.filter(function(i){return i.sn!==sn;}),
+        transactions:data.value.transactions.filter(function(t){return t.sn!==sn;}),
+        batches:data.value.batches.map(function(b){return Object.assign({},b,{snList:b.snList.filter(function(s){return s!==sn;})});})
+      });
+      data.value=next;save(next);deleteTarget.value=null;
+    }
+
+    var resetArmed=ref(false);
+    function resetAll(){var e={batches:[],stockItems:[],transactions:[]};data.value=e;save(e);resetArmed.value=false;}
+
+    // Dashboard filter — multi-keyword with comma. ดึงจาก transactions ทั้งหมด เรียงล่าสุดก่อน
+    var dashQ=ref('');var dashLoc=ref('');var dashStatus=ref('');
+    var tableZoom=ref(100);
+    var pinchState={active:false,startDist:0,startZoom:100};
+    var lastTableTapTime=0;
+    function touchDist(t1,t2){var dx=t1.clientX-t2.clientX,dy=t1.clientY-t2.clientY;return Math.sqrt(dx*dx+dy*dy);}
+    function onTableTouchStart(e){
+      if(e.touches.length===2){
+        pinchState.active=true;
+        pinchState.startDist=touchDist(e.touches[0],e.touches[1]);
+        pinchState.startZoom=tableZoom.value;
+      }
+    }
+    function onTableTouchMove(e){
+      if(pinchState.active&&e.touches.length===2){
+        e.preventDefault();
+        var d=touchDist(e.touches[0],e.touches[1]);
+        if(pinchState.startDist>0){
+          var ratio=d/pinchState.startDist;
+          var newZoom=Math.round(pinchState.startZoom*ratio);
+          tableZoom.value=Math.max(25,Math.min(250,newZoom));
+        }
+      }
+    }
+    function fitTableToWidth(container){
+      if(!container){return;}
+      var table=container.querySelector('table');
+      if(!table){return;}
+      tableZoom.value=100;
+      nextTick(function(){
+        var natural=table.scrollWidth;
+        var avail=container.clientWidth;
+        if(natural>0&&avail>0){
+          var scale=Math.floor((avail/natural)*100)-1;
+          tableZoom.value=Math.max(25,Math.min(250,scale));
+        }
+      });
+    }
+    function onTableTouchEnd(e){
+      var wasPinching=pinchState.active;
+      if(!e.touches||e.touches.length<2){pinchState.active=false;}
+      if(!wasPinching&&(!e.touches||e.touches.length===0)&&e.changedTouches&&e.changedTouches.length===1){
+        var now=Date.now();
+        if(now-lastTableTapTime<350){
+          fitTableToWidth(e.currentTarget);
+          lastTableTapTime=0;
+        }else{
+          lastTableTapTime=now;
+        }
+      }
+    }
+    var dashDateFrom=ref('');var dashDateTo=ref('');
+    var filteredDashRows=computed(function(){
+      return dashRows.value.filter(function(row){
+        if(dashLoc.value && row.location!==dashLoc.value){return false;}
+        if(dashStatus.value){
+          if(dashStatus.value==='In Stock'){
+            if(!row.isInStock){return false;}
+          } else {
+            var hasStatus=row.statusBadges.some(function(b){return b.label===dashStatus.value;});
+            if(!hasStatus){return false;}
+          }
+        }
+        if(dashDateFrom.value && (!row.rawDate || row.rawDate<dashDateFrom.value)){return false;}
+        if(dashDateTo.value && (!row.rawDate || row.rawDate>dashDateTo.value)){return false;}
+        if(dashQ.value.trim()){
+          var keywords=dashQ.value.split(',').map(function(k){return k.trim().toLowerCase();}).filter(Boolean);
+          var haystack=[row.po,row.pn,row.swName,row.sn,row.location,row.statusLabel,row.date,row.person,row.remark].filter(Boolean).join(' ').toLowerCase();
+          return keywords.every(function(k){return haystack.indexOf(k)>=0;});
+        }
+        return true;
+      });
+    });
+    function visibleBadges(row){
+      if(!dashStatus.value){return row.statusBadges;}
+      return row.statusBadges.filter(function(b){return b.label===dashStatus.value;});
+    }
+
+    // รับ — 2-step SN: preview then confirm
+    var rcv=ref({po:'',swName:'',pn:'',qty:'',date:todayStr(),location:'',empCode:'',empName:''});
+    var rcvErr=ref('');var activeBatchId=ref(null);
+    var scanValue=ref('');var snPreview=ref('');
+    var scanDate=ref(todayStr());var scanErr=ref('');var scanInput=ref(null);
+
+    var activeBatch=computed(function(){return data.value.batches.find(function(b){return b.id===activeBatchId.value;});});
+    var pendingBatches=computed(function(){
+      var snSet=new Set(data.value.stockItems.map(function(i){return i.sn;}));
+      return data.value.batches.filter(function(b){
+        var hasAnySn=b.snList.some(function(s){return snSet.has(s);});
+        return hasAnySn && b.snList.length<b.qty && b.id!==activeBatchId.value;
+      });
+    });
+
+    function createBatch(){
+      if(!rcv.value.po.trim()||!rcv.value.swName.trim()||!rcv.value.pn.trim()||!rcv.value.qty||Number(rcv.value.qty)<=0){rcvErr.value='กรอกข้อมูลให้ครบ';return;}
+      if(!rcv.value.location){rcvErr.value='เลือกสถานที่จัดเก็บ F7, F9 หรือ F10';return;}
+      if(!rcv.value.empCode.trim()||!rcv.value.empName.trim()){rcvErr.value='กรอกรหัสและชื่อผู้รับ';return;}
+      var receivedBy={code:rcv.value.empCode.trim(),name:rcv.value.empName.trim()};
+      var batch={id:uid('b_'),po:rcv.value.po.trim(),swName:rcv.value.swName.trim(),pn:rcv.value.pn.trim(),qty:Number(rcv.value.qty),receivedDate:rcv.value.date||todayStr(),location:rcv.value.location,createdAt:Date.now(),snList:[],receivedBy:receivedBy};
+      var next=Object.assign({},data.value,{batches:[batch].concat(data.value.batches)});
+      data.value=next;save(next);activeBatchId.value=batch.id;scanDate.value=batch.receivedDate;
+      rcv.value={po:'',swName:'',pn:'',qty:'',date:todayStr(),location:'',empCode:'',empName:''};rcvErr.value='';snPreview.value='';
+      nextTick(function(){if(scanInput.value){scanInput.value.focus();}});
+    }
+
+    // Step 1: capture into preview
+    function previewSn(){
+      var sn=scanValue.value.trim();if(!sn){return;}
+      scanValue.value='';
+      scanErr.value='';
+      if(!activeBatch.value){scanErr.value='สร้างรายการก่อน';return;}
+      if(activeBatch.value.snList.length>=activeBatch.value.qty){scanErr.value='เกินจำนวนที่ระบุ ('+activeBatch.value.qty+' ตัว) แล้ว';return;}
+      if(data.value.stockItems.some(function(it){return it.sn===sn;})){scanErr.value='SN '+sn+' มีในระบบแล้ว';return;}
+      if(activeBatch.value.snList.indexOf(sn)>=0){scanErr.value='SN '+sn+' เพิ่มไปแล้วใน batch นี้';return;}
+      snPreview.value=sn;
+    }
+
+    // Step 2: actually add
+    function confirmSn(){
+      var sn=snPreview.value;if(!sn||!activeBatch.value){return;}
+      var stockItem={sn:sn,pn:activeBatch.value.pn,swName:activeBatch.value.swName,po:activeBatch.value.po,batchId:activeBatch.value.id,receivedDate:scanDate.value||activeBatch.value.receivedDate,status:'in_stock',location:activeBatch.value.location,receivedBy:activeBatch.value.receivedBy||null,withdrawnBy:null,withdrawnDate:null,withdrawReason:null,returnedBy:null,returnedDate:null};
+      var tx={id:uid('t_'),type:'receive',date:scanDate.value||activeBatch.value.receivedDate,po:activeBatch.value.po,pn:activeBatch.value.pn,swName:activeBatch.value.swName,sn:sn,location:activeBatch.value.location,personCode:activeBatch.value.receivedBy?activeBatch.value.receivedBy.code:null,personName:activeBatch.value.receivedBy?activeBatch.value.receivedBy.name:null,batchId:activeBatch.value.id,timestamp:Date.now()};
+      var bid=activeBatch.value.id;
+      var next=Object.assign({},data.value,{batches:data.value.batches.map(function(b){return b.id===bid?Object.assign({},b,{snList:b.snList.concat([sn])}):b;}),stockItems:data.value.stockItems.concat([stockItem]),transactions:[tx].concat(data.value.transactions)});
+      data.value=next;save(next);
+      snPreview.value='';scanErr.value='';
+      nextTick(function(){if(scanInput.value){scanInput.value.focus();}});
+    }
+
+    function cancelSn(){snPreview.value='';scanValue.value='';scanErr.value='';nextTick(function(){if(scanInput.value){scanInput.value.focus();}});}
+
+    function removeSn(sn){
+      var b=activeBatch.value;if(!b){return;}var bid=b.id;
+      var next=Object.assign({},data.value,{batches:data.value.batches.map(function(x){return x.id===bid?Object.assign({},x,{snList:x.snList.filter(function(s){return s!==sn;})}):x;}),stockItems:data.value.stockItems.filter(function(it){return !(it.sn===sn&&it.batchId===bid);}),transactions:data.value.transactions.filter(function(tx){return !(tx.sn===sn&&tx.batchId===bid&&tx.type==='receive');})});
+      data.value=next;save(next);
+    }
+
+    // เบิก
+    var wd=ref({location:'',empCode:'',empName:'',pn:'',date:todayStr(),reason:''});
+    var wdScan=ref('');var wdErr=ref('');var wdPending=ref([]);
+    var availableItems=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='in_stock'&&(!wd.value.location||i.location===wd.value.location)&&(!wd.value.pn||i.pn===wd.value.pn.trim());});});
+    function addWdItem(item){
+      if(!wd.value.location){wdErr.value='เลือกสถานที่เบิกก่อน';return;}
+      if(item.location!==wd.value.location){wdErr.value='SN '+item.sn+' อยู่ที่ '+item.location;return;}
+      if(wdPending.value.some(function(p){return p.sn===item.sn;})){wdErr.value='SN '+item.sn+' ถูกเพิ่มแล้ว';return;}
+      wdPending.value.push(item);if(!wd.value.pn){wd.value.pn=item.pn;}wdErr.value='';
+    }
+    function addWdSn(){
+      var sn=wdScan.value.trim();if(!sn){return;}
+      wdScan.value='';
+      if(!wd.value.location){wdErr.value='เลือกสถานที่เบิกก่อน';return;}
+      var item=data.value.stockItems.find(function(i){return i.sn===sn;});
+      if(!item){wdErr.value='ไม่พบ SN '+sn;return;}
+      if(item.status!=='in_stock'){wdErr.value='SN '+sn+' ไม่อยู่ในสต็อก';return;}
+      addWdItem(item);
+    }
+    function confirmWithdraw(){
+      if(!wd.value.location){wdErr.value='เลือกสถานที่เบิก';return;}
+      if(!wd.value.empCode.trim()||!wd.value.empName.trim()){wdErr.value='กรอกรหัสและชื่อผู้เบิก';return;}
+      if(!wd.value.reason.trim()){wdErr.value='กรอกเหตุผลที่เบิก';return;}
+      if(!wdPending.value.length){wdErr.value='ยังไม่ได้เลือก SN';return;}
+      var date=wd.value.date||todayStr();var sns=wdPending.value.map(function(i){return i.sn;});
+      var code=wd.value.empCode.trim();var name=wd.value.empName.trim();var reason=wd.value.reason.trim();
+      var txs=wdPending.value.map(function(item){return {id:uid('t_'),type:'withdraw',date:date,po:item.po,pn:item.pn,swName:item.swName,sn:item.sn,location:item.location,personCode:code,personName:name,reason:reason,batchId:null,timestamp:Date.now()};});
+      var next=Object.assign({},data.value,{stockItems:data.value.stockItems.map(function(it){return sns.indexOf(it.sn)>=0?Object.assign({},it,{status:'withdrawn',withdrawnBy:{code:code,name:name},withdrawnDate:date,withdrawReason:reason}):it;}),transactions:txs.concat(data.value.transactions)});
+      data.value=next;save(next);wdPending.value=[];wd.value.pn='';wd.value.reason='';wdErr.value='';
+    }
+
+    // คืน
+    var rt=ref({empCode:'',empName:'',date:todayStr()});
+    var rtScan=ref('');var rtErr=ref('');var rtPending=ref([]);
+    function addRtSn(){
+      var sn=rtScan.value.trim();if(!sn){return;}
+      rtScan.value='';
+      var item=data.value.stockItems.find(function(i){return i.sn===sn;});
+      if(!item){rtErr.value='ไม่พบ SN '+sn;return;}
+      if(item.status!=='withdrawn'){rtErr.value='SN '+sn+' ไม่ได้อยู่ในสถานะเบิกออก';return;}
+      if(rtPending.value.some(function(p){return p.sn===sn;})){rtErr.value='SN '+sn+' ถูกเพิ่มแล้ว';return;}
+      rtPending.value.push(item);rtErr.value='';
+    }
+    function confirmReturn(){
+      if(!rt.value.empCode.trim()||!rt.value.empName.trim()){rtErr.value='กรอกรหัสและชื่อผู้คืน';return;}
+      if(!rtPending.value.length){rtErr.value='ยังไม่ได้สแกน SN';return;}
+      var date=rt.value.date||todayStr();var sns=rtPending.value.map(function(i){return i.sn;});
+      var code=rt.value.empCode.trim();var name=rt.value.empName.trim();
+      var txs=rtPending.value.map(function(item){return {id:uid('t_'),type:'return',date:date,po:item.po,pn:item.pn,swName:item.swName,sn:item.sn,location:item.location,personCode:code,personName:name,batchId:null,timestamp:Date.now()};});
+      var next=Object.assign({},data.value,{stockItems:data.value.stockItems.map(function(it){return sns.indexOf(it.sn)>=0?Object.assign({},it,{status:'in_stock',withdrawnBy:null,withdrawnDate:null,withdrawReason:null,returnedBy:{code:code,name:name},returnedDate:date}):it;}),transactions:txs.concat(data.value.transactions)});
+      data.value=next;save(next);rtPending.value=[];rtErr.value='';
+    }
+
+
+    // ย้ายสถานที่ (เฉพาะของที่อยู่ในสต็อก)
+    var mv=ref({from:'',to:'',empCode:'',empName:'',date:todayStr(),reason:''});
+    var mvScan=ref('');var mvErr=ref('');var mvPending=ref([]);
+    var mvAvailable=computed(function(){return data.value.stockItems.filter(function(i){return i.status==='in_stock'&&i.location===mv.value.from;});});
+    var mvShowAll=ref(false);
+    var mvHistory=computed(function(){
+      return data.value.transactions.filter(function(t){return t.type==='move';}).slice().sort(function(a,b){return (b.timestamp||0)-(a.timestamp||0);});
+    });
+    var mvHistoryShown=computed(function(){return mvShowAll.value?mvHistory.value:mvHistory.value.slice(0,20);});
+    function addMvItem(item){
+      if(!mv.value.from){mvErr.value='เลือกสถานที่ต้นทางก่อน';return;}
+      if(item.status!=='in_stock'){mvErr.value='SN '+item.sn+' ไม่อยู่ในสต็อก (ย้ายได้เฉพาะของที่อยู่ในสต็อก)';return;}
+      if(item.location!==mv.value.from){mvErr.value='SN '+item.sn+' อยู่ที่ '+item.location;return;}
+      if(mvPending.value.some(function(p){return p.sn===item.sn;})){mvErr.value='SN '+item.sn+' ถูกเพิ่มแล้ว';return;}
+      mvPending.value.push(item);mvErr.value='';
+    }
+    function addMvSn(){
+      var sn=mvScan.value.trim();if(!sn){return;}
+      mvScan.value='';
+      if(!mv.value.from){mvErr.value='เลือกสถานที่ต้นทางก่อน';return;}
+      var item=data.value.stockItems.find(function(i){return i.sn===sn;});
+      if(!item){mvErr.value='ไม่พบ SN '+sn;return;}
+      addMvItem(item);
+    }
+    function confirmMove(){
+      var from=mv.value.from,to=mv.value.to;
+      if(!from||!to){mvErr.value='เลือกสถานที่ต้นทางและปลายทาง';return;}
+      if(from===to){mvErr.value='ต้นทางและปลายทางต้องไม่เหมือนกัน';return;}
+      if(!mv.value.empCode.trim()||!mv.value.empName.trim()){mvErr.value='กรอกรหัสและชื่อผู้ย้าย';return;}
+      if(!mvPending.value.length){mvErr.value='ยังไม่ได้เลือก SN';return;}
+      var sns=mvPending.value.map(function(i){return i.sn;});
+      var stillOk=sns.every(function(sn){var it=data.value.stockItems.find(function(x){return x.sn===sn;});return it&&it.status==='in_stock'&&it.location===from;});
+      if(!stillOk){mvErr.value='มีบาง SN สถานะเปลี่ยนไปแล้ว กรุณาเลือกใหม่';mvPending.value=[];return;}
+      var date=mv.value.date||todayStr();
+      var code=mv.value.empCode.trim();var name=mv.value.empName.trim();
+      var note='ย้าย '+from+' → '+to+(mv.value.reason.trim()?' · '+mv.value.reason.trim():'');
+      var ts=Date.now();
+      var txs=mvPending.value.map(function(item,i){return {id:uid('t_'),type:'move',date:date,po:item.po,pn:item.pn,swName:item.swName,sn:item.sn,location:to,fromLocation:from,toLocation:to,personCode:code,personName:name,reason:note,batchId:null,timestamp:ts+i};});
+      var next=Object.assign({},data.value,{stockItems:data.value.stockItems.map(function(it){return sns.indexOf(it.sn)>=0?Object.assign({},it,{location:to}):it;}),transactions:txs.concat(data.value.transactions)});
+      data.value=next;save(next);mvPending.value=[];mv.value.reason='';mvErr.value='';
+    }
+
+    // สแกน SN ด้วยกล้อง / อัพโหลดรูป (ใช้ได้ทั้งแท็บ รับ / เบิก / คืน / ย้าย)
+    var showScanner=ref(false);var scannerErr=ref('');var scannerTarget=ref('');
+    var html5QrCodeInstance=null;
+
+    function openScanner(target){
+      scannerTarget.value=target;scannerErr.value='';showScanner.value=true;
+      nextTick(function(){
+        if(!window.Html5Qrcode){scannerErr.value='ไม่พบไลบรารีสแกน กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';return;}
+        try{
+          html5QrCodeInstance=new window.Html5Qrcode('scanner-reader');
+          html5QrCodeInstance.start(
+            {facingMode:'environment'},
+            {fps:10,qrbox:{width:250,height:150}},
+            function(decodedText){handleScanResult(decodedText);},
+            function(){/* ignore per-frame decode errors */}
+          ).catch(function(e){scannerErr.value='เปิดกล้องไม่สำเร็จ กรุณาอนุญาตการใช้กล้อง หรือใช้อัพโหลดรูปแทน';});
+        }catch(e){scannerErr.value='เปิดกล้องไม่สำเร็จ กรุณาอนุญาตการใช้กล้อง หรือใช้อัพโหลดรูปแทน';}
+      });
+    }
+
+    function stopCamera(){
+      if(!html5QrCodeInstance){return Promise.resolve();}
+      var inst=html5QrCodeInstance;html5QrCodeInstance=null;
+      return inst.stop().then(function(){try{inst.clear();}catch(e){}}).catch(function(){try{inst.clear();}catch(e){}});
+    }
+
+    function closeScanner(){
+      stopCamera().then(function(){showScanner.value=false;});
+    }
+
+    function handleScanResult(text){
+      var sn=(text||'').trim();if(!sn){return;}
+      if(scannerTarget.value==='receive'){scanValue.value=sn;previewSn();}
+      else if(scannerTarget.value==='withdraw'){wdScan.value=sn;addWdSn();}
+      else if(scannerTarget.value==='return'){rtScan.value=sn;addRtSn();}
+      else if(scannerTarget.value==='move'){mvScan.value=sn;addMvSn();}
+      closeScanner();
+    }
+
+    function onScanFile(e){
+      var file=e.target.files&&e.target.files[0];e.target.value='';
+      if(!file){return;}
+      scannerErr.value='';
+      if(!window.Html5Qrcode){scannerErr.value='ไม่พบไลบรารีสแกน กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';return;}
+      stopCamera().then(function(){
+        var scannerObj=new window.Html5Qrcode('scanner-reader');
+        scannerObj.scanFile(file,true).then(function(decodedText){
+          scannerObj.clear();
+          handleScanResult(decodedText);
+        }).catch(function(){
+          scannerObj.clear();
+          scannerErr.value='อ่าน SN จากรูปไม่สำเร็จ หรือกรอกเอง';
+        });
+      });
+    }
+
+    // รูปตัวอย่างสวิตช์ต่อ PO/PN — แนบตอนรับเข้า หรือย้อนกลับมาเพิ่ม/แก้ทีหลังในหน้า Search ก็ได้
+    // เก็บใน Firestore (ไม่ใช้ Cloud Storage เพราะต้องอัพเกรดบัญชี) — บีบอัดรูปให้เล็กก่อนเก็บ จำกัดสูงสุด 2 รูปต่อ PO/PN
+    var MAX_BATCH_PHOTOS=2;
+    var showBatchPhotoModal=ref(false);var batchPhotoTarget=ref(null);
+    var batchPhotoTargetPhotos=ref([]);var batchPhotoUploading=ref(false);var batchPhotoErr=ref('');
+    var batchPhotoUnsub=null;
+
+    function poPnKey(po,pn){
+      return ((po||'').trim()+'__'+(pn||'').trim()).replace(/[\/\s]+/g,'-') || 'unknown';
+    }
+
+    function openBatchPhotoModal(b){
+      if(!b){return;}
+      var key=poPnKey(b.po,b.pn);
+      batchPhotoTarget.value={po:b.po,pn:b.pn,key:key};
+      batchPhotoErr.value='';batchPhotoTargetPhotos.value=[];showBatchPhotoModal.value=true;
+      if(batchPhotoUnsub){batchPhotoUnsub();batchPhotoUnsub=null;}
+      var pdocRef=doc(db,'poPnPhotos',key);
+      batchPhotoUnsub=onSnapshot(pdocRef,function(snap){
+        batchPhotoTargetPhotos.value=snap.exists()?(snap.data().photos||[]):[];
+      },function(){ /* ignore listen errors, upload will surface real errors */ });
+    }
+
+    function closeBatchPhotoModal(){
+      if(batchPhotoUnsub){batchPhotoUnsub();batchPhotoUnsub=null;}
+      showBatchPhotoModal.value=false;batchPhotoTarget.value=null;batchPhotoErr.value='';
+    }
+
+    function compressImage(file,maxDim,quality){
+      return new Promise(function(resolve,reject){
+        var reader=new FileReader();
+        reader.onload=function(e){
+          var img=new Image();
+          img.onload=function(){
+            var w=img.width,h=img.height;
+            var scale=Math.min(1,maxDim/Math.max(w,h));
+            var cw=Math.max(1,Math.round(w*scale));
+            var ch=Math.max(1,Math.round(h*scale));
+            var canvas=document.createElement('canvas');
+            canvas.width=cw;canvas.height=ch;
+            var ctx=canvas.getContext('2d');
+            ctx.drawImage(img,0,0,cw,ch);
+            resolve(canvas.toDataURL('image/jpeg',quality));
+          };
+          img.onerror=function(){reject(new Error('อ่านไฟล์รูปไม่สำเร็จ'));};
+          img.src=e.target.result;
+        };
+        reader.onerror=function(){reject(new Error('อ่านไฟล์ไม่สำเร็จ'));};
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function onBatchPhotoFileChange(e){
+      var files=e.target.files?Array.prototype.slice.call(e.target.files):[];
+      e.target.value='';
+      if(!files.length||!batchPhotoTarget.value){return;}
+      var remain=MAX_BATCH_PHOTOS-batchPhotoTargetPhotos.value.length;
+      if(remain<=0){batchPhotoErr.value='แนบได้สูงสุด '+MAX_BATCH_PHOTOS+' รูปต่อ PO/PN — ลบรูปเดิมก่อนถ้าต้องการเปลี่ยน';return;}
+      if(files.length>remain){files=files.slice(0,remain);}
+      batchPhotoErr.value='';batchPhotoUploading.value=true;
+      try{
+        var newPhotos=[];
+        for(var i=0;i<files.length;i++){
+          var durl=await compressImage(files[i],1100,0.6);
+          newPhotos.push({url:durl,ts:Date.now()+i});
+        }
+        var pdocRef=doc(db,'poPnPhotos',batchPhotoTarget.value.key);
+        await setDoc(pdocRef,{po:batchPhotoTarget.value.po,pn:batchPhotoTarget.value.pn,photos:arrayUnion.apply(null,newPhotos)},{merge:true});
+      }catch(err){
+        console.error('Batch photo upload error:',err);
+        batchPhotoErr.value='อัพโหลดรูปไม่สำเร็จ: '+(err&&err.message?err.message:'ไม่ทราบสาเหตุ');
+      }
+      batchPhotoUploading.value=false;
+    }
+
+    function removeBatchPhoto(photo){
+      if(!batchPhotoTarget.value){return;}
+      var pdocRef=doc(db,'poPnPhotos',batchPhotoTarget.value.key);
+      updateDoc(pdocRef,{photos:arrayRemove(photo)}).catch(function(){batchPhotoErr.value='ลบรูปไม่สำเร็จ';});
+    }
+
+    return {
+      data,saving,connected,lastSync,err,tab,tabs,showExportModal,deleteTarget,
+      LOCATIONS,locColor,LOC_BTN_ACTIVE,
+      pnOptions,swOptions,f7Stock,f7Out,f9Stock,f9Out,f10Stock,f10Out,dashRows,filteredDashRows,activeBatches,
+      dashQ,dashLoc,dashStatus,dashDateFrom,dashDateTo,visibleBadges,
+      tableZoom,onTableTouchStart,onTableTouchMove,onTableTouchEnd,
+      fmtDate,txLabel,txColor,doExport,resetArmed,resetAll,
+      confirmDeleteItem,executeDelete,
+      rcv,rcvErr,activeBatchId,activeBatch,pendingBatches,
+      scanValue,snPreview,scanDate,scanErr,scanInput,
+      createBatch,previewSn,confirmSn,cancelSn,removeSn,
+      wd,wdScan,wdErr,wdPending,availableItems,addWdItem,addWdSn,confirmWithdraw,
+      rt,rtScan,rtErr,rtPending,addRtSn,confirmReturn,
+      mv,mvScan,mvErr,mvPending,mvAvailable,addMvItem,addMvSn,confirmMove,mvHistory,mvHistoryShown,mvShowAll,
+      showScanner,scannerErr,openScanner,closeScanner,onScanFile,
+      showBatchPhotoModal,batchPhotoTarget,batchPhotoTargetPhotos,batchPhotoUploading,batchPhotoErr,
+      openBatchPhotoModal,closeBatchPhotoModal,onBatchPhotoFileChange,removeBatchPhoto,
+    };
+  }
+}).mount('#app');
+
+// 🐝 Bee flies to a random spot on screen every couple seconds
+(function(){
+  var bee=document.getElementById('beeFlyer');
+  var beeEmoji=document.getElementById('beeEmoji');
+  if(!bee||!beeEmoji) return;
+  var flyTimer=null;
+  function randPos(){
+    var margin=40;
+    var x=margin+Math.random()*(window.innerWidth-margin*2);
+    var y=margin+Math.random()*(window.innerHeight-margin*2);
+    bee.style.left=x+'px';
+    bee.style.top=y+'px';
+  }
+  function scheduleFly(){
+    if(flyTimer) clearInterval(flyTimer);
+    flyTimer=setInterval(randPos, 2800);
+  }
+  randPos();
+  scheduleFly();
+  function spawnFirework(cx,cy){
+    var flash=document.createElement('div');
+    flash.className='firework-flash';
+    flash.style.setProperty('--fx', cx+'px');
+    flash.style.setProperty('--fy', cy+'px');
+    document.body.appendChild(flash);
+    setTimeout(function(){ flash.remove(); }, 400);
+
+    var colors=['#ff595e','#ffca3a','#8ac926','#1982c4','#6a4c93','#ff924c','#ff5cad','#38e8ff'];
+    var count=18;
+    for(var i=0;i<count;i++){
+      var el=document.createElement('div');
+      el.className='firework-star';
+      var color=colors[Math.floor(Math.random()*colors.length)];
+      var size=22+Math.random()*20;
+      el.style.width=size+'px';
+      el.style.height=size+'px';
+      el.style.background=color;
+      el.style.boxShadow='0 0 16px 4px '+color;
+      var angle=(Math.PI*2*i/count)+(Math.random()*0.3);
+      var dist=80+Math.random()*120;
+      el.style.left=cx+'px';
+      el.style.top=cy+'px';
+      el.style.setProperty('--dx', (Math.cos(angle)*dist)+'px');
+      el.style.setProperty('--dy', (Math.sin(angle)*dist)+'px');
+      el.style.setProperty('--rot', (360+Math.random()*360)+'deg');
+      document.body.appendChild(el);
+      (function(node){ setTimeout(function(){ node.remove(); }, 1000); })(el);
+    }
+  }
+  function fireworksShow(){
+    var bursts=6;
+    for(var b=0;b<bursts;b++){
+      (function(delay){
+        setTimeout(function(){
+          var x=60+Math.random()*(window.innerWidth-120);
+          var y=60+Math.random()*(window.innerHeight*0.65);
+          spawnFirework(x,y);
+        }, delay);
+      })(b*180);
+    }
+  }
+  function burstParticles(){
+    var rect=bee.getBoundingClientRect();
+    var cx=rect.left+rect.width/2, cy=rect.top+rect.height/2;
+    var glyphs=['🍯','✨','💛','🌼'];
+    var count=10;
+    for(var i=0;i<count;i++){
+      var el=document.createElement('div');
+      el.className='bee-particle';
+      el.textContent=glyphs[Math.floor(Math.random()*glyphs.length)];
+      var angle=(Math.PI*2*i/count)+(Math.random()*0.5);
+      var dist=50+Math.random()*70;
+      el.style.left=cx+'px';
+      el.style.top=cy+'px';
+      el.style.setProperty('--dx', (Math.cos(angle)*dist)+'px');
+      el.style.setProperty('--dy', (Math.sin(angle)*dist)+'px');
+      el.style.setProperty('--rot', (Math.random()*360-180)+'deg');
+      document.body.appendChild(el);
+      (function(node){ setTimeout(function(){ node.remove(); }, 650); })(el);
+    }
+  }
+  bee.addEventListener('click', function(){
+    beeEmoji.classList.remove('squish');
+    void beeEmoji.offsetWidth; // restart animation
+    beeEmoji.classList.add('squish');
+    burstParticles();
+    fireworksShow();
+    setTimeout(function(){ beeEmoji.classList.remove('squish'); }, 450);
+    randPos();
+    scheduleFly();
+  });
+})();
+</script>
+</body>
+</html>
